@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>月度报告处理</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        .upload-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .upload-section:hover {
+            border-color: #666;
+        }
+        .upload-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .upload-btn:hover {
+            background-color: #45a049;
+        }
+        #fileInput {
+            display: none;
+        }
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        .history-table th, .history-table td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        .history-table th {
+            background-color: #f5f5f5;
+        }
+        .download-btn {
+            background-color: #2196F3;
+            color: white;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .download-btn:hover {
+            background-color: #1976D2;
+        }
+        .download-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status-uploading { color: #ff9800; }
+        .status-processing { color: #2196F3; }
+        .status-completed { color: #4CAF50; }
+    </style>
+</head>
+<body>
+    <h1>月度报告处理</h1>
+    
+    <div class="upload-section">
+        <input type="file" id="fileInput" webkitdirectory multiple accept=".xlsx">
+        <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+            选择文件夹并上传
+        </button>
+        <p id="selectedFiles"></p>
+    </div>
+
+    <h2>上传历史</h2>
+    <table class="history-table">
+        <thead>
+            <tr>
+                <th>编号</th>
+                <th>上传时间</th>
+                <th>文件数量</th>
+                <th>处理状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody id="historyBody">
+        </tbody>
+    </table>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const selectedFilesText = document.getElementById('selectedFiles');
+        const historyBody = document.getElementById('historyBody');
+        
+        let uploadHistory = [];
+        let pollIntervals = {};
+
+        fileInput.addEventListener('change', async function(e) {
+            const files = Array.from(e.target.files).filter(f => f.name.endsWith('.xlsx'));
+            if (files.length === 0) {
+                alert('请选择xlsx文件');
+                return;
+            }
+            
+            selectedFilesText.textContent = `已选择 ${files.length} 个xlsx文件，正在上传...`;
+            
+            const formData = new FormData();
+            files.forEach(f => formData.append('files', f));
+            
+            try {
+                const response = await fetch('/upload/', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    uploadHistory.unshift(data.record);
+                    renderHistory();
+                    startPolling(data.record.id);
+                    selectedFilesText.textContent = '';
+                } else {
+                    alert('上传失败: ' + data.error);
+                }
+            } catch (err) {
+                console.error(err);
+                alert('上传失败: ' + err.message);
+            }
+            
+            fileInput.value = '';
+        });
+
+        function renderHistory() {
+            historyBody.innerHTML = uploadHistory.map(record => `
+                <tr>
+                    <td>${record.id}</td>
+                    <td>${record.upload_time}</td>
+                    <td>${record.file_count}</td>
+                    <td class="status-${record.status === '上传中' ? 'uploading' : record.status === '处理中' ? 'processing' : 'completed'}">
+                        ${record.status}
+                    </td>
+                    <td>
+                        ${record.status === '处理完毕' 
+                            ? `<a class="download-btn" href="/download/${record.id}/">下载</a>`
+                            : `<button class="download-btn" disabled>下载</button>`
+                        }
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function startPolling(id) {
+            if (pollIntervals[id]) clearInterval(pollIntervals[id]);
+            
+            pollIntervals[id] = setInterval(async () => {
+                try {
+                    const response = await fetch(`/status/${id}/`);
+                    const data = await response.json();
+                    
+                    const record = uploadHistory.find(r => r.id === id);
+                    if (record) {
+                        record.status = data.status;
+                        renderHistory();
+                        
+                        if (data.status === '处理完毕') {
+                            clearInterval(pollIntervals[id]);
+                            delete pollIntervals[id];
+                        }
+                    }
+                } catch (err) {
+                    console.error('Status check failed');
+                }
+            }, 2000);
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/history/');
+                const data = await response.json();
+                uploadHistory = data.records;
+                renderHistory();
+                
+                uploadHistory.forEach(record => {
+                    if (record.status !== '处理完毕') {
+                        startPolling(record.id);
+                    }
+                });
+            } catch (err) {
+                console.error('Load history failed');
+            }
+        }
+
+        loadHistory();
+    </script>
+</body>
+</html>
